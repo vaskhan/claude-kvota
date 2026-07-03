@@ -1,0 +1,6 @@
+Kvota
+Kvota-*
+Kvota.app/
+ClaudeLimitsBar*
+*.o
+.DS_Store

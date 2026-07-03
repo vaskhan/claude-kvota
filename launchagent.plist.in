@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>__IDENT__</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Applications/__APP__.app/Contents/MacOS/__APP__</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>Crashed</key><true/>
+    </dict>
+</dict>
+</plist>
