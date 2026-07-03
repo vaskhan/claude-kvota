@@ -120,6 +120,72 @@ struct ScopedLimit {
     let pct: Int
 }
 
+/// One limit row: "Title: NN%    resets …" above a real progress bar that
+/// spans the menu width and fills proportionally to the percentage.
+final class StatView: NSView {
+    private static let segmentCount = 20
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let detailLabel = NSTextField(labelWithString: "")
+    private var segments: [NSView] = []
+    private var pct: Int = -1
+
+    init() {
+        super.init(frame: NSRect(x: 0, y: 0, width: 280, height: 38))
+        titleLabel.font = NSFont.menuFont(ofSize: 13)
+        titleLabel.frame = NSRect(x: 14, y: 18, width: 156, height: 17)
+        titleLabel.lineBreakMode = .byTruncatingTail
+        detailLabel.font = NSFont.menuFont(ofSize: 11)
+        detailLabel.textColor = .secondaryLabelColor
+        detailLabel.alignment = .right
+        detailLabel.frame = NSRect(x: 168, y: 20, width: 98, height: 15)
+        addSubview(titleLabel)
+        addSubview(detailLabel)
+
+        // Segmented bar: small rectangles spanning the full menu width.
+        let gap: CGFloat = 2
+        let totalWidth: CGFloat = 252
+        let count = Self.segmentCount
+        let segWidth = (totalWidth - gap * CGFloat(count - 1)) / CGFloat(count)
+        segments = (0..<count).map { i in
+            let seg = NSView()
+            seg.wantsLayer = true
+            seg.frame = NSRect(x: 14 + CGFloat(i) * (segWidth + gap), y: 9,
+                               width: segWidth, height: 4)
+            seg.layer?.cornerRadius = 1
+            addSubview(seg)
+            return seg
+        }
+        applyColors()
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    func apply(title: String, pct: Int, detail: String) {
+        self.pct = pct
+        titleLabel.stringValue = "\(title): " + (pct >= 0 ? "\(pct)%" : "–")
+        detailLabel.stringValue = detail
+        applyColors()
+    }
+
+    private func applyColors() {
+        let filled = pct >= 0
+            ? Int((Double(min(pct, 100)) / 100 * Double(Self.segmentCount)).rounded())
+            : 0
+        let color: NSColor = pct >= 90 ? .systemRed : (pct >= 70 ? .systemOrange : .systemGreen)
+        for (i, seg) in segments.enumerated() {
+            seg.layer?.backgroundColor = i < filled
+                ? color.withAlphaComponent(0.8).cgColor
+                : NSColor.quaternaryLabelColor.cgColor
+        }
+    }
+
+    // Layer colors don't auto-adapt to light/dark — reapply on theme change.
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyColors()
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     let menu = NSMenu()
@@ -143,7 +209,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Menu state
     var menuOpen = false
     var menuDirty = false
-    var statItems: [NSMenuItem] = []
+    var statViews: [StatView] = []
     var errorItem = NSMenuItem()
     var updatedItem = NSMenuItem()
 
@@ -173,9 +239,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.delegate = self
         rebuildMenu()
         refresh()
-        // Poll interval: `defaults write ru.khanin.kvota interval -int 30` (min 30, default 60)
+        // Background poll interval: `defaults write ru.khanin.kvota interval -int 120`
+        // (seconds, min 60, default 300). Opening the menu always refreshes,
+        // so a slow background cadence never shows stale data when you look.
         let stored = UserDefaults.standard.integer(forKey: "interval")
-        let interval = TimeInterval(stored >= 30 ? stored : 60)
+        let interval = TimeInterval(stored >= 60 ? stored : 300)
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.refresh()
         }
@@ -245,10 +313,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     if http.statusCode == 429 {
                         let retryAfter = (http.value(forHTTPHeaderField: "Retry-After")
                                             .flatMap(Double.init)) ?? 300
-                        self.backoffUntilUptime = ProcessInfo.processInfo.systemUptime
-                                                  + min(max(retryAfter, 60), 3600)
-                        self.lastError = L("Rate limited — pausing for \(Int(retryAfter/60)) min",
-                                           "Лимит запросов — пауза \(Int(retryAfter/60)) мин")
+                        let pause = min(max(retryAfter, 60), 3600)
+                        self.backoffUntilUptime = ProcessInfo.processInfo.systemUptime + pause
+                        let mins = Int((pause / 60).rounded(.up))
+                        self.lastError = L("Rate limited — pausing for \(mins) min",
+                                           "Лимит запросов — пауза \(mins) мин")
                         return
                     }
                     if http.statusCode == 401 {
@@ -315,9 +384,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let pctStr = sessionPct >= 0 ? "\(sessionPct)%" : "–"
             button.title = "\(warn)✳︎ \(pctStr)\(staleMark)"
         }
-        // Updating item titles in place is safe while the menu is open;
+        // Updating item contents in place is safe while the menu is open;
         // only structural changes (row count) require a full rebuild.
-        if statItems.count == 2 + scoped.count {
+        if statViews.count == 2 + scoped.count {
             fillMenu()
         } else if menuOpen {
             menuDirty = true
@@ -326,20 +395,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func bar(_ pct: Int) -> String {
-        guard pct >= 0 else { return "" }
-        let filled = min(10, max(0, pct / 10))
-        return String(repeating: "▰", count: filled) + String(repeating: "▱", count: 10 - filled)
-    }
-
     /// Rebuild the menu structure: one item per stat row plus fixed slots.
     func rebuildMenu() {
         menu.removeAllItems()
-        statItems = (0..<(2 + scoped.count)).map { _ in
+        statViews = (0..<(2 + scoped.count)).map { _ in
+            let view = StatView()
             let item = NSMenuItem()
-            item.isEnabled = false
+            item.view = view
             menu.addItem(item)
-            return item
+            return view
         }
 
         menu.addItem(.separator())
@@ -367,26 +431,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Refresh item contents in place — safe even while the menu is open.
     func fillMenu() {
-        func statTitle(_ title: String, _ pct: Int, _ extra: String) -> NSAttributedString {
-            let pctStr = pct >= 0 ? "\(pct)%" : "–"
-            // Two separately-attributed runs appended — no range arithmetic,
-            // safe for any Unicode in `title` (model names come from the API).
-            let attr = NSMutableAttributedString(
-                string: "\(title): \(pctStr)  \(extra)",
-                attributes: [.font: NSFont.menuFont(ofSize: 13)])
-            attr.append(NSAttributedString(
-                string: "\n" + bar(pct),
-                attributes: [.font: NSFont.monospacedSystemFont(ofSize: 9, weight: .regular),
-                             .foregroundColor: pct >= 90 ? NSColor.systemRed
-                                             : (pct >= 70 ? NSColor.systemOrange : NSColor.systemGreen)]))
-            return attr
-        }
-
-        guard statItems.count == 2 + scoped.count else { return }
-        statItems[0].attributedTitle = statTitle(L("5-hour", "5 часов"), sessionPct, sessionReset)
-        statItems[1].attributedTitle = statTitle(L("Weekly (all)", "Неделя (все)"), weeklyAllPct, weeklyReset)
+        guard statViews.count == 2 + scoped.count else { return }
+        statViews[0].apply(title: L("5-hour", "5 часов"), pct: sessionPct, detail: sessionReset)
+        statViews[1].apply(title: L("Weekly (all)", "Неделя (все)"), pct: weeklyAllPct, detail: weeklyReset)
         for (i, s) in scoped.enumerated() {
-            statItems[2 + i].attributedTitle = statTitle(L("Weekly (\(s.name))", "Неделя (\(s.name))"), s.pct, "")
+            statViews[2 + i].apply(title: L("Weekly (\(s.name))", "Неделя (\(s.name))"), pct: s.pct, detail: "")
         }
 
         if let err = lastError {

@@ -4,24 +4,12 @@
 
 Kvota shows the same numbers as `/usage` inside Claude Code — the 5-hour
 session limit, the weekly limit, and the per-model weekly limit — as a
-tiny native menu bar item that updates every minute.
+tiny native menu bar item that stays current without hammering the API.
 
-```
-✳︎ 8%          ← 5-hour limit, always in sight
-```
+<img src="docs/screenshot-menu.png" alt="Kvota in the menu bar: 5-hour, weekly and per-model limits with segmented progress bars" width="380">
 
-Click it for details:
-
-```
-5-hour: 8%   resets 04:19
-▰▱▱▱▱▱▱▱▱▱
-Weekly (all): 29%   resets Sat 21:59
-▰▰▱▱▱▱▱▱▱▱
-Weekly (Fable): 43%
-▰▰▰▰▱▱▱▱▱▱
-```
-
-A ⚠️ appears in the menu bar when any limit crosses 90%.
+`✳︎ 8%` sits in your menu bar; click it for all limits with reset times.
+A ⚠️ appears when any limit crosses 90%.
 
 ## Why
 
@@ -63,11 +51,11 @@ make uninstall
 
 1. Reads Claude Code's OAuth token from the macOS Keychain
    (`security find-generic-password -s "Claude Code-credentials"`).
-2. Calls `GET https://api.anthropic.com/api/oauth/usage` once a minute.
-   Opening the menu also refreshes, throttled to at most one request per
-   15 seconds; on HTTP 429 Kvota backs off for the time the server asks
-   (default 5 minutes). Change the poll interval (seconds, min 30) with:
-   `defaults write ru.khanin.kvota interval -int 30`.
+2. Calls `GET https://api.anthropic.com/api/oauth/usage` every 5 minutes
+   in the background, and on every menu open (throttled to one request
+   per 15 seconds). On HTTP 429 it backs off for as long as the server
+   asks. Background interval is configurable (seconds, min 60):
+   `defaults write ru.khanin.kvota interval -int 120`.
 3. Renders the three limits with reset times, converted to your timezone.
 
 Token refresh is handled by Claude Code itself; if the token expires,
